@@ -2,15 +2,15 @@ name: Rust Core CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [master]
     paths:
-      - 'papyr_core/**'
-      - '.github/workflows/rust-ci.yaml'
+      - "papyr_core/**"
+      - ".github/workflows/rust-ci.yaml"
   pull_request:
-    branches: [main, master]
+    branches: [master]
     paths:
-      - 'papyr_core/**'
-      - '.github/workflows/rust-ci.yaml'
+      - "papyr_core/**"
+      - ".github/workflows/rust-ci.yaml"
 
 concurrency:
   group: rust-ci-${{ github.ref }}
