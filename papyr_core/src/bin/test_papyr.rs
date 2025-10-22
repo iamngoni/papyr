@@ -6,8 +6,8 @@
 //  Copyright (c) 2025 Codecraft Solutions. All rights reserved.
 //
 
-use papyr_core::*;
 use papyr_core::registry::BackendRegistry;
+use papyr_core::*;
 
 #[cfg(feature = "wia")]
 use papyr_core::backends::wia::WiaBackend;
@@ -18,9 +18,9 @@ use papyr_core::backends::ica::IcaBackend;
 #[tokio::main]
 async fn main() {
     println!("Testing papyr_core...");
-    
+
     let mut registry = BackendRegistry::new();
-    
+
     // Register WIA backend if available
     #[cfg(feature = "wia")]
     {
@@ -57,13 +57,13 @@ async fn main() {
         match ica_backend.enumerate_devices_async().await {
             Ok(devices) => {
                 println!("✓ Async enumeration found {} scanner(s):", devices.len());
-                
+
                 // Now register the backend and test it
                 registry.register(Box::new(ica_backend));
-                
+
                 for (i, device) in devices.iter().enumerate() {
                     println!("  - {} ({}): {:?}", device.name, device.id, device.backend);
-                    
+
                     // Test capabilities
                     match registry.capabilities(&device.id) {
                         Ok(caps) => {
@@ -76,7 +76,7 @@ async fn main() {
                             println!("    ✗ Failed to get capabilities: {:?}", e);
                         }
                     }
-                    
+
                     // Test scan configuration (only for the first device to avoid hanging)
                     if i == 0 {
                         println!("    🔧 Testing scan session creation...");
@@ -89,7 +89,7 @@ async fn main() {
             }
         }
     }
-    
+
     // Check final registry state
     match registry.list_devices() {
         Ok(devices) => {
@@ -103,7 +103,7 @@ async fn main() {
             println!("⚠️ Error checking final registry: {:?}", e);
         }
     }
-    
+
     println!("Test completed.");
 }
 
@@ -113,18 +113,21 @@ fn test_scan_session(registry: &mut BackendRegistry, device_id: &str) {
         duplex: false,
         dpi: 300,
         color_mode: ColorMode::Color,
-        page_size: PageSize { width_mm: 216, height_mm: 279 },
+        page_size: PageSize {
+            width_mm: 216,
+            height_mm: 279,
+        },
         area: None,
         brightness: None,
         contrast: None,
         max_pages: Some(1),
     };
-    
+
     // Test scan session creation (but don't actually scan to avoid hanging)
     match registry.start_scan(device_id, config) {
         Ok(mut session) => {
             println!("    ✓ Scan session created successfully");
-            
+
             // Just try to get the first event, don't loop indefinitely
             match session.next_event() {
                 Ok(Some(event)) => {
