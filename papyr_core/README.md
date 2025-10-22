@@ -675,29 +675,34 @@ mod tests {
 }
 ```
 
-### C FFI Test (`test_c/test_ffi.c`)
+### FFI Integration Tests (`tests/ffi_test.rs`)
 
-```c
-#include "../include/papyr_core.h"
-#include <stdio.h>
-
-int main() {
-    if (papyr_init() != PAPYR_OK) {
-        printf("Init failed\n");
-        return 1;
+```rust
+#[test]
+fn test_ffi_init_and_cleanup() {
+    unsafe {
+        let result = papyr_init();
+        assert_eq!(result, 0, "papyr_init should return 0 on success");
+        papyr_cleanup();
     }
-
-    PapyrDeviceList* devices = papyr_list_devices();
-    printf("Found %u devices\n", devices->count);
-
-    for (uint32_t i = 0; i < devices->count; i++) {
-        printf("  %s - %s\n", devices->devices[i].name, devices->devices[i].id);
-    }
-
-    papyr_free_device_list(devices);
-    papyr_cleanup();
-    return 0;
 }
+
+#[test]
+fn test_ffi_list_scanners() {
+    unsafe {
+        papyr_init();
+        let scanners = papyr_list_scanners();
+        assert!(!scanners.is_null());
+        
+        let list = &*scanners;
+        println!("Found {} scanners via FFI", list.count);
+        
+        papyr_free_scanner_list(scanners);
+        papyr_cleanup();
+    }
+}
+
+// Run with: cargo test
 ```
 
 ### Dart Test (Integration)

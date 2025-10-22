@@ -1,0 +1,94 @@
+name: Rust Core CI
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'papyr_core/**'
+      - '.github/workflows/rust-ci.yaml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'papyr_core/**'
+      - '.github/workflows/rust-ci.yaml'
+
+concurrency:
+  group: rust-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  format:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+        working-directory: papyr_core
+
+  clippy:
+    name: Clippy Lints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            papyr_core/target
+          key: clippy-${{ hashFiles('**/Cargo.lock') }}
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+        working-directory: papyr_core
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install SANE (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libsane-dev
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            papyr_core/target
+          key: test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+      - run: cargo build --verbose
+        working-directory: papyr_core
+      - run: cargo test --verbose
+        working-directory: papyr_core
+        timeout-minutes: 10
+      - run: cargo run --bin test_scanner
+        working-directory: papyr_core
+        continue-on-error: true
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            papyr_core/target
+          key: docs-${{ hashFiles('**/Cargo.lock') }}
+      - run: cargo doc --no-deps --all-features
+        working-directory: papyr_core
