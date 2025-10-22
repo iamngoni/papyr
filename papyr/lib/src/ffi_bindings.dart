@@ -3,6 +3,7 @@
 
 import 'dart:ffi';
 import 'dart:io';
+import 'package:ffi/ffi.dart';
 
 // Backend types
 class PapyrBackend {
@@ -144,12 +145,26 @@ class PapyrCoreFFI {
   }
 
   DynamicLibrary _loadLibrary() {
+    const testLibPath = '../papyr_core/target/release/';
+    
     if (Platform.isWindows) {
-      return DynamicLibrary.open('papyr_core.dll');
+      try {
+        return DynamicLibrary.open('${testLibPath}papyr_core.dll');
+      } catch (_) {
+        return DynamicLibrary.open('papyr_core.dll');
+      }
     } else if (Platform.isMacOS) {
-      return DynamicLibrary.open('libpapyr_core.dylib');
+      try {
+        return DynamicLibrary.open('${testLibPath}libpapyr_core.dylib');
+      } catch (_) {
+        return DynamicLibrary.open('libpapyr_core.dylib');
+      }
     } else if (Platform.isLinux) {
-      return DynamicLibrary.open('libpapyr_core.so');
+      try {
+        return DynamicLibrary.open('${testLibPath}libpapyr_core.so');
+      } catch (_) {
+        return DynamicLibrary.open('libpapyr_core.so');
+      }
     } else {
       throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
     }

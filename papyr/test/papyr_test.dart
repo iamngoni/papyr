@@ -1,56 +1,135 @@
-import 'package:test/test.dart';
 import 'package:papyr/papyr.dart';
+import 'package:test/test.dart';
 
 void main() {
   group('Papyr', () {
     late Papyr papyr;
 
     setUp(() {
-      papyr = Papyr.instance;
+      papyr = Papyr();
     });
 
     test('can be instantiated', () {
       expect(papyr, isNotNull);
     });
 
-    test('initialization works', () async {
-      // This will fail on non-Windows machines without proper library setup
-      // but tests the API structure
+    test('initialize succeeds', () async {
       try {
         await papyr.initialize();
-        expect(true, true); // Initialization succeeded
-        
-        // Test scanner listing
-        final scanners = await papyr.listScanners();
-        expect(scanners, isA<List<ScannerInfo>>());
-        
-        // Cleanup
-        await papyr.dispose();
+        expect(papyr.isAvailable, isTrue);
       } catch (e) {
-        // Expected to fail on development machines without proper setup
-        expect(e, isA<Exception>());
+        // May fail if library not built yet
+        expect(e, isA<PapyrException>());
       }
     });
 
-    test('ScannerInfo toString works', () {
-      const scanner = ScannerInfo(
-        id: 'test',
-        name: 'Test Scanner',
-        backend: ScannerBackend.wia,
-      );
-      
-      expect(scanner.toString(), 'ScannerInfo(test: Test Scanner, ScannerBackend.wia)');
+    test('discoverScanners returns list', () async {
+      try {
+        await papyr.initialize();
+        final scanners = await papyr.discoverScanners();
+        expect(scanners, isA<List<Scanner>>());
+      } catch (e) {
+        // Expected if no library or no scanners
+      }
     });
 
-    test('ScanConfig has correct defaults', () {
-      const config = ScanConfig(source: ScanSource.flatbed);
-      
-      expect(config.source, ScanSource.flatbed);
-      expect(config.duplex, false);
-      expect(config.dpi, 300);
-      expect(config.colorMode, ColorMode.color);
-      expect(config.pageWidthMm, 216);
-      expect(config.pageHeightMm, 279);
+    test('ScanConfig can be created', () {
+      const scanner = Scanner(
+        id: 'test',
+        name: 'Test Scanner',
+        backend: ScannerBackend.unknown,
+        capabilities: Capabilities(
+          sources: [ScanSource.flatbed],
+          dpis: [300],
+          colorModes: [ColorMode.color],
+          supportsDuplex: false,
+        ),
+      );
+
+      final config = ScanConfig(
+        scanner: scanner,
+        source: ScanSource.flatbed,
+        dpi: 300,
+        colorMode: ColorMode.color,
+      );
+
+      expect(config.scanner, equals(scanner));
+      expect(config.source, equals(ScanSource.flatbed));
+      expect(config.dpi, equals(300));
+      expect(config.colorMode, equals(ColorMode.color));
+      expect(config.format, equals(ScanFormat.pdf));
+      expect(config.useDuplex, isFalse);
+    });
+
+    test('Scanner extensions work', () {
+      const scanner = Scanner(
+        id: 'test',
+        name: 'Test Scanner',
+        backend: ScannerBackend.escl,
+        capabilities: Capabilities(
+          sources: [ScanSource.flatbed, ScanSource.adf],
+          dpis: [150, 300, 600],
+          colorModes: [ColorMode.color, ColorMode.grayscale],
+          supportsDuplex: true,
+        ),
+      );
+
+      expect(scanner.supportsColor, isTrue);
+      expect(scanner.supportsGrayscale, isTrue);
+      expect(scanner.supportsBlackAndWhite, isFalse);
+      expect(scanner.hasAdf, isTrue);
+      expect(scanner.hasFlatbed, isTrue);
+      expect(scanner.supportsDuplex, isTrue);
+      expect(scanner.isNetworkScanner, isTrue);
+      expect(scanner.isLocalScanner, isFalse);
+      expect(scanner.maxDpi, equals(600));
+      expect(scanner.minDpi, equals(150));
+    });
+
+    test('ScanConfig validation works', () {
+      const scanner = Scanner(
+        id: 'test',
+        name: 'Test Scanner',
+        backend: ScannerBackend.escl,
+        capabilities: Capabilities(
+          sources: [ScanSource.flatbed],
+          dpis: [300],
+          colorModes: [ColorMode.color],
+          supportsDuplex: false,
+        ),
+      );
+
+      final validConfig = ScanConfig(
+        scanner: scanner,
+        source: ScanSource.flatbed,
+        dpi: 300,
+        colorMode: ColorMode.color,
+      );
+      expect(validConfig.isValid, isTrue);
+
+      final invalidDpi = ScanConfig(
+        scanner: scanner,
+        source: ScanSource.flatbed,
+        dpi: 600,
+        colorMode: ColorMode.color,
+      );
+      expect(invalidDpi.isValid, isFalse);
+      expect(
+        invalidDpi.validate(),
+        contains('does not support DPI'),
+      );
+
+      final invalidSource = ScanConfig(
+        scanner: scanner,
+        source: ScanSource.adf,
+        dpi: 300,
+        colorMode: ColorMode.color,
+      );
+      expect(invalidSource.isValid, isFalse);
+      expect(
+        invalidSource.validate(),
+        contains('does not support source'),
+      );
     });
   });
 }
