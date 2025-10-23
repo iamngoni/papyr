@@ -26,16 +26,8 @@ pub struct IcaBackend {
 #[derive(Clone, Debug)]
 struct DeviceInfo {
     name: String,
-    device_type: DeviceType,
     ippusb_url: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum DeviceType {
-    HpMfp,
-    NetworkEscl,
-    UsbScanner,
-    Unknown,
+    sane_device: Option<String>,
 }
 
 impl IcaBackend {
@@ -115,8 +107,8 @@ impl IcaBackend {
                                     device_id.clone(),
                                     DeviceInfo {
                                         name: current_printer.clone(),
-                                        device_type: DeviceType::HpMfp,
                                         ippusb_url: None,
+                                        sane_device: None,
                                     },
                                 );
                             }
@@ -148,8 +140,8 @@ impl IcaBackend {
                             device_id.clone(),
                             DeviceInfo {
                                 name: current_printer.clone(),
-                                device_type: DeviceType::HpMfp,
                                 ippusb_url: None,
+                                sane_device: None,
                             },
                         );
                     }
@@ -235,8 +227,10 @@ impl IcaBackend {
                                             device_id.clone(),
                                             DeviceInfo {
                                                 name: device_model.to_string(),
-                                                device_type: DeviceType::UsbScanner,
                                                 ippusb_url: None,
+                                                sane_device: Some(
+                                                    device_spec[..colon_pos].to_string(),
+                                                ),
                                             },
                                         );
                                     }
@@ -270,8 +264,9 @@ impl IcaBackend {
 
         if let Ok(names) = self.device_names.lock() {
             if let Some(info) = names.get(device_id) {
-                if info.device_type == DeviceType::HpMfp {
-                    println!("   📄 Detected HP MFP device - adding ADF support");
+                // Detect MFP based on IPP-USB URL presence
+                if info.ippusb_url.is_some() {
+                    println!("   📄 Detected MFP device (has IPP-USB) - adding ADF support");
                     sources.push(ScanSource::Adf);
                     dpis.extend(vec![600, 1200]);
                     supports_duplex = true;
@@ -532,33 +527,23 @@ impl ScanSession for IcaScanSession {
 #[cfg(target_os = "macos")]
 impl IcaScanSession {
     fn try_actual_scan(&mut self) -> Result<Option<Vec<u8>>> {
-        // Strategy: Try methods in order based on device type
         if let Some(ref info) = self.device_info {
-            match info.device_type {
-                DeviceType::HpMfp => {
-                    // HP MFP: Try eSCL via IPP-USB first
-                    if let Some(ref ippusb_url) = info.ippusb_url {
-                        if let Ok(data) = self.try_ippusb_escl_scan(ippusb_url) {
-                            return Ok(Some(data));
-                        }
-                    }
+            // Try IPP-USB eSCL first if available
+            if let Some(ref ippusb_url) = info.ippusb_url {
+                if let Ok(data) = self.try_ippusb_escl_scan(ippusb_url) {
+                    return Ok(Some(data));
+                }
+            }
 
-                    // Fallback to scanimage if available
-                    if let Ok(data) = self.try_scanimage_scan() {
-                        return Ok(Some(data));
-                    }
+            // Try scanimage with SANE device name if available
+            if let Some(ref sane_device) = info.sane_device {
+                if let Ok(data) = self.try_scanimage_scan_with_device(sane_device) {
+                    return Ok(Some(data));
                 }
-                DeviceType::UsbScanner => {
-                    // USB scanner: Use scanimage
-                    if let Ok(data) = self.try_scanimage_scan() {
-                        return Ok(Some(data));
-                    }
-                }
-                _ => {}
             }
         }
 
-        // Last resort: try scanimage
+        // Last resort: try scanimage with device_id
         self.try_scanimage_scan().map(Some)
     }
 
@@ -678,13 +663,20 @@ impl IcaScanSession {
         )
     }
 
-    fn try_scanimage_scan(&self) -> Result<Vec<u8>> {
-        println!("🔧 Attempting scan via scanimage command");
+    fn try_scanimage_scan_with_device(&self, sane_device: &str) -> Result<Vec<u8>> {
+        self.do_scanimage_scan(sane_device)
+    }
 
+    fn try_scanimage_scan(&self) -> Result<Vec<u8>> {
         let sane_device = self
             .device_id
             .strip_prefix("ica_")
             .unwrap_or(&self.device_id);
+        self.do_scanimage_scan(sane_device)
+    }
+
+    fn do_scanimage_scan(&self, sane_device: &str) -> Result<Vec<u8>> {
+        println!("🔧 Attempting scan via scanimage command");
 
         let temp_file = format!("/tmp/papyr_scan_{}.pnm", std::process::id());
 
