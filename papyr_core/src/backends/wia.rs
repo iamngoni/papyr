@@ -8,7 +8,6 @@
 
 #[cfg(windows)]
 use windows::{
-    core::*, 
     Win32::Devices::ImageAcquisition::*, 
     Win32::System::Com::*,
 };
@@ -19,7 +18,7 @@ use crate::models::{
 };
 
 #[cfg(windows)]
-const WIA_DEVICE_TYPE_SCANNER: u32 = 2;
+const WIA_DEVICE_TYPE_SCANNER: i32 = 2;
 
 #[cfg(windows)]
 const PRSPEC_PROPID: u32 = 1;
@@ -85,32 +84,30 @@ impl WiaBackend {
 
     #[cfg(windows)]
     fn extract_device_info(&self, device_info: &IWiaPropertyStorage) -> Result<ScannerInfo> {
-        unsafe {
-            let device_id = self
-                .read_device_property(device_info, 0) // WIA_DIP_DEV_ID
-                .unwrap_or_else(|_| {
-                    format!(
-                        "wia_device_{}",
-                        std::ptr::addr_of!(device_info) as usize
-                    )
-                });
+        let device_id = self
+            .read_device_property(device_info, 0) // WIA_DIP_DEV_ID
+            .unwrap_or_else(|_| {
+                format!(
+                    "wia_device_{}",
+                    std::ptr::addr_of!(device_info) as usize
+                )
+            });
 
-            let device_name = self
-                .read_device_property(device_info, 1) // WIA_DIP_DEV_NAME
-                .unwrap_or_else(|_| "Unknown WIA Scanner".to_string());
+        let device_name = self
+            .read_device_property(device_info, 1) // WIA_DIP_DEV_NAME
+            .unwrap_or_else(|_| "Unknown WIA Scanner".to_string());
 
-            Ok(ScannerInfo {
-                id: device_id,
-                name: device_name,
-                backend: Backend::Wia,
-            })
-        }
+        Ok(ScannerInfo {
+            id: device_id,
+            name: device_name,
+            backend: Backend::Wia,
+        })
     }
 
     #[cfg(windows)]
     fn read_device_property(
         &self,
-        storage: &IWiaPropertyStorage,
+        _storage: &IWiaPropertyStorage,
         _prop_id: u32, // Simplified to just use the property ID directly
     ) -> Result<String> {
         // For now, return a generic result to get the compilation working
@@ -169,15 +166,18 @@ impl BackendProvider for WiaBackend {
         Err(PapyrError::Backend("WIA only supported on Windows".into()))
     }
 
-    fn start_scan(&self, _device_id: &str, _cfg: ScanConfig) -> Result<Box<dyn ScanSession>> {
+    fn start_scan(&self, device_id: &str, config: ScanConfig) -> Result<Box<dyn ScanSession>> {
         #[cfg(windows)]
         {
-            let session = WiaScanSession::new(device_id, cfg)?;
+            let session = WiaScanSession::new(device_id, config)?;
             Ok(Box::new(session))
         }
 
         #[cfg(not(windows))]
-        Err(PapyrError::Backend("WIA only supported on Windows".into()))
+        {
+            let _ = (device_id, config); // Suppress unused warnings on non-Windows
+            Err(PapyrError::Backend("WIA only supported on Windows".into()))
+        }
     }
 }
 
@@ -192,7 +192,7 @@ pub struct WiaScanSession {
 
 impl WiaScanSession {
     #[cfg(windows)]
-    pub fn new(_device_id: &str, config: ScanConfig) -> Result<Self> {
+    pub fn new(device_id: &str, config: ScanConfig) -> Result<Self> {
         Ok(WiaScanSession {
             device_id: device_id.to_string(),
             config,
