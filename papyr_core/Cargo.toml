@@ -15,7 +15,7 @@ sane = []     # Scanner Access Now Easy (Linux)
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.17"
 tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "time", "process"] }
-reqwest = { version = "0.12.24", features = ["json"] }
+reqwest = { version = "0.12.24", features = ["json", "blocking"] }
 quick-xml = { version = "0.38.3", features = ["serialize"] }
 mdns-sd = "0.15.1"
 libloading = "0.8.0"
