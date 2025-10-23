@@ -113,6 +113,13 @@ pub enum PapyrError {
 
 pub type Result<T> = std::result::Result<T, PapyrError>;
 
+#[cfg(windows)]
+impl From<windows::core::Error> for PapyrError {
+    fn from(err: windows::core::Error) -> Self {
+        PapyrError::Backend(format!("Windows error: {}", err))
+    }
+}
+
 pub trait BackendProvider: Send + Sync {
     fn name(&self) -> &'static str;
     fn kind(&self) -> Backend;

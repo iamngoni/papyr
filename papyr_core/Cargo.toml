@@ -24,10 +24,16 @@ windows = { version = "0.62.2", features = [
     "Win32_Devices_ImageAcquisition",
     "Win32_System_Com",
     "Win32_System_Variant",
-    "Win32_UI_Shell_PropertiesSystem"
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_System_Ole",
+    "Win32_Foundation"
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 image-capture-core = "0.1.5"
 cocoa = "0.26.1"
 objc = "0.2"
+core-foundation = "0.9"
+objc2-image-capture-core = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-av-foundation = "0.3.2"
