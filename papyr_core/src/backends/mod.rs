@@ -13,7 +13,8 @@ pub mod escl;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub mod twain;
 
-#[cfg(feature = "wia")]
+// WIA is available by default on Windows (not behind feature flag)
+#[cfg(target_os = "windows")]
 pub mod wia;
 
 #[cfg(feature = "ica")]

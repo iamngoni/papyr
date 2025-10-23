@@ -203,27 +203,43 @@ impl TwainBackend {
 
         // Determine DSM library path based on platform
         #[cfg(target_os = "windows")]
-        let dsm_path = "TWAINDSM.dll";
+        let dsm_paths = ["TWAINDSM.dll", "twain_32.dll", "C:\\Windows\\twain_32.dll"];
         #[cfg(target_os = "macos")]
-        let dsm_path = "/System/Library/Frameworks/TWAIN.framework/TWAIN";
+        let dsm_paths = ["/System/Library/Frameworks/TWAIN.framework/TWAIN"];
         #[cfg(target_os = "linux")]
-        let dsm_path = "libtwaindsm.so";
+        let dsm_paths = ["libtwaindsm.so"];
 
-        println!("📚 Loading TWAIN DSM from: {}", dsm_path);
+        let mut last_error = None;
+        
+        for dsm_path in &dsm_paths {
+            println!("📚 Trying TWAIN DSM: {}", dsm_path);
+            
+            match unsafe { libloading::Library::new(dsm_path) } {
+                Ok(lib) => {
+                    match unsafe { lib.get(b"DSM_Entry") } {
+                        Ok(dsm_entry) => {
+                            let dsm_entry: libloading::Symbol<DsmEntry> = dsm_entry;
+                            let dsm_entry_fn = *dsm_entry;
+                            self.dsm_lib = Some(lib);
+                            self.dsm_entry = Some(dsm_entry_fn);
+                            self.state = TwainState::State2;
+                            println!("✅ TWAIN DSM loaded successfully from: {}", dsm_path);
+                            return Ok(());
+                        },
+                        Err(e) => {
+                            last_error = Some(format!("DSM_Entry not found in {}: {}", dsm_path, e));
+                        }
+                    }
+                },
+                Err(e) => {
+                    last_error = Some(format!("Failed to load {}: {}", dsm_path, e));
+                }
+            }
+        }
 
-        let lib = unsafe { libloading::Library::new(dsm_path) }
-            .map_err(|e| PapyrError::Backend(format!("Failed to load TWAIN DSM: {}", e)))?;
-
-        let dsm_entry: libloading::Symbol<DsmEntry> = unsafe { lib.get(b"DSM_Entry") }
-            .map_err(|e| PapyrError::Backend(format!("Failed to find DSM_Entry: {}", e)))?;
-
-        let dsm_entry_fn = *dsm_entry;
-        self.dsm_lib = Some(lib);
-        self.dsm_entry = Some(dsm_entry_fn);
-        self.state = TwainState::State2;
-
-        println!("✅ TWAIN DSM loaded successfully");
-        Ok(())
+        Err(PapyrError::Backend(
+            last_error.unwrap_or_else(|| "No TWAIN DSM found".to_string())
+        ))
     }
 
     fn open_dsm(&mut self) -> Result<()> {

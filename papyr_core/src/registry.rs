@@ -14,7 +14,8 @@ use crate::models::{
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::backends::twain::TwainBackend;
 
-#[cfg(feature = "wia")]
+// WIA is default on Windows
+#[cfg(target_os = "windows")]
 use crate::backends::wia::WiaBackend;
 
 #[cfg(feature = "ica")]
@@ -34,21 +35,35 @@ impl BackendRegistry {
         };
 
         // eSCL is always available (cross-platform network scanning)
+        println!("🔧 Registering eSCL backend (network scanners)");
         registry.register(Box::new(EsclBackend::new()));
 
-        // TWAIN is primary backend for Windows and macOS
+        // WIA is primary backend on Windows 
+        #[cfg(target_os = "windows")]
+        {
+            println!("🔧 Registering WIA backend (Windows primary)");
+            registry.register(Box::new(WiaBackend::new()));
+        }
+
+        // TWAIN as fallback for Windows and macOS
         #[cfg(any(target_os = "windows", target_os = "macos"))]
-        registry.register(Box::new(TwainBackend::new()));
+        {
+            println!("🔧 Registering TWAIN backend (fallback)");
+            registry.register(Box::new(TwainBackend::new()));
+        }
 
-        // Platform-specific backends as fallbacks
-        #[cfg(feature = "wia")]
-        registry.register(Box::new(WiaBackend::new()));
-
+        // Other platform-specific backends
         #[cfg(feature = "ica")]
-        registry.register(Box::new(IcaBackend::new()));
+        {
+            println!("🔧 Registering ICA backend (macOS)");
+            registry.register(Box::new(IcaBackend::new()));
+        }
 
         #[cfg(feature = "sane")]
-        registry.register(Box::new(SaneBackend::new()));
+        {
+            println!("🔧 Registering SANE backend (Linux)");
+            registry.register(Box::new(SaneBackend::new()));
+        }
 
         registry
     }
@@ -58,11 +73,17 @@ impl BackendRegistry {
     }
 
     pub fn list_devices(&self) -> Result<Vec<ScannerInfo>> {
+        println!("📡 Querying all registered backends for devices...");
         let mut scanners_info = Vec::new();
-        for provider in &self.providers {
-            scanners_info.extend(provider.enumerate());
+        
+        for (i, provider) in self.providers.iter().enumerate() {
+            println!("🔍 Backend {}: {} - discovering devices...", i + 1, provider.name());
+            let devices = provider.enumerate();
+            println!("   Found {} devices", devices.len());
+            scanners_info.extend(devices);
         }
 
+        println!("🎯 Total devices found across all backends: {}", scanners_info.len());
         Ok(scanners_info)
     }
 
