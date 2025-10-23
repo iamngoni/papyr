@@ -23,6 +23,8 @@ use crate::models::{
 // Correct WIA 2.0 constants
 #[cfg(windows)]
 const WIA_DEVICETYPE_SCANNER: i32 = 0x00000001;
+#[cfg(windows)]
+const WIA_DEVICETYPE_DEFAULT: i32 = 0x00000000; // All imaging devices including MFPs
 
 // WIA Property IDs
 #[cfg(windows)]
@@ -45,18 +47,29 @@ impl WiaBackend {
             // Proper COM initialization for STA
             let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             if hr.is_err() {
-                return Err(PapyrError::Backend("Failed to initialize COM".into()));
+                println!("⚠️ COM already initialized or initialization failed");
             }
 
-            // Use WIA 2.0 device manager - need to create the GUID manually since it's not exported
-            let clsid = GUID::from_u128(0x79C07CF8_8F84_4AA3_A5AD_77B4D7AE0DD1); // WiaDevMgr2 CLSID
+            // Use the correct WIA 2.0 device manager CLSID
+            // This is the actual CLSID for WiaDevMgr2 from the Windows SDK
+            let clsid = GUID {
+                data1: 0x79C07CF8,
+                data2: 0x8F84,  
+                data3: 0x4AA3,
+                data4: [0xA5, 0xAD, 0x77, 0xB4, 0xD7, 0xAE, 0x0D, 0xD1],
+            };
             
+            println!("🔧 Creating WIA 2.0 Device Manager...");
             let device_manager: IWiaDevMgr2 = CoCreateInstance(
                 &clsid,
                 None,
                 CLSCTX_LOCAL_SERVER,
-            ).map_err(|e| PapyrError::Backend(format!("Failed to create WIA device manager: {:?}", e)))?;
+            ).map_err(|e| {
+                println!("❌ Failed to create WIA device manager: {:?}", e);
+                PapyrError::Backend(format!("Failed to create WIA device manager: {:?}", e))
+            })?;
             
+            println!("✅ WIA 2.0 Device Manager created successfully");
             Ok(device_manager)
         }
     }
@@ -66,43 +79,59 @@ impl WiaBackend {
         let device_manager = self.get_device_manager()?;
         let mut devices = Vec::new();
 
-        unsafe {
-            match device_manager.EnumDeviceInfo(WIA_DEVICETYPE_SCANNER) {
-                Ok(device_enum) => {
-                    // Reset enumeration cursor
-                    let _ = device_enum.Reset();
-                    
-                    loop {
-                        let mut device_info: Option<IWiaPropertyStorage> = None;
-                        let mut fetched = 0u32;
-
-                        let hr = device_enum.Next(1, &mut device_info as *mut _, &mut fetched as *mut _);
+        // Try both device types: dedicated scanners and all imaging devices (including MFPs)
+        let device_types = [WIA_DEVICETYPE_SCANNER, WIA_DEVICETYPE_DEFAULT];
+        
+        for &device_type in &device_types {
+            let type_name = match device_type {
+                WIA_DEVICETYPE_SCANNER => "dedicated scanners",
+                WIA_DEVICETYPE_DEFAULT => "all imaging devices (including MFPs)",
+                _ => "unknown",
+            };
+            
+            println!("🔍 WIA: Enumerating {} (type: {})", type_name, device_type);
+            
+            unsafe {
+                match device_manager.EnumDeviceInfo(device_type) {
+                    Ok(device_enum) => {
+                        // Reset enumeration cursor
+                        let _ = device_enum.Reset();
                         
-                        if hr.is_ok() && fetched > 0 {
-                            if let Some(info) = device_info {
-                                match self.extract_device_info(&info) {
-                                    Ok(scanner_info) => {
-                                        println!("Found WIA scanner: {}", scanner_info.name);
-                                        devices.push(scanner_info);
-                                    },
-                                    Err(e) => {
-                                        println!("Failed to extract device info: {:?}", e);
-                                        continue;
+                        let mut count = 0;
+                        loop {
+                            let mut device_info: Option<IWiaPropertyStorage> = None;
+                            let mut fetched = 0u32;
+
+                            let hr = device_enum.Next(1, &mut device_info as *mut _, &mut fetched as *mut _);
+                            
+                            if hr.is_ok() && fetched > 0 {
+                                count += 1;
+                                if let Some(info) = device_info {
+                                    match self.extract_device_info(&info) {
+                                        Ok(scanner_info) => {
+                                            println!("✅ Found WIA device: {} ({})", scanner_info.name, scanner_info.id);
+                                            devices.push(scanner_info);
+                                        },
+                                        Err(e) => {
+                                            println!("⚠️ Failed to extract device info: {:?}", e);
+                                            continue;
+                                        }
                                     }
                                 }
+                            } else {
+                                break;
                             }
-                        } else {
-                            break;
                         }
+                        println!("🔍 WIA: Found {} devices of type {}", count, type_name);
+                    },
+                    Err(e) => {
+                        println!("⚠️ WIA enumeration failed for type {}: {:?}", type_name, e);
                     }
-                },
-                Err(e) => {
-                    println!("WIA device enumeration failed: {:?}", e);
-                    return Ok(vec![]);
                 }
             }
         }
 
+        println!("🎯 WIA: Total unique devices found: {}", devices.len());
         Ok(devices)
     }
 
