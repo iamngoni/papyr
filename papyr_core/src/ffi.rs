@@ -92,10 +92,11 @@ pub extern "C" fn papyr_list_scanners() -> *mut CScannerInfoList {
                             })
                             .collect();
 
+                        let c_scanners_len = c_scanners.len();
                         let c_scanners_ptr = Box::into_raw(c_scanners.into_boxed_slice());
                         let list = Box::new(CScannerInfoList {
                             scanners: c_scanners_ptr.cast(),
-                            count: (*c_scanners_ptr).len(),
+                            count: c_scanners_len,
                         });
 
                         Box::into_raw(list)
