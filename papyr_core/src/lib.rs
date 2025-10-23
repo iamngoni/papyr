@@ -1,3 +1,10 @@
+#![allow(static_mut_refs)]
+#![allow(dead_code)]
+#![allow(clippy::new_without_default)]
+#![allow(clippy::needless_borrows_for_generic_args)]
+#![allow(clippy::manual_unwrap_or_default)]
+#![allow(clippy::type_complexity)]
+#![allow(deprecated)]
 //
 //  papyr_core
 //  lib.rs

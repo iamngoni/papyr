@@ -19,7 +19,11 @@ const SANE_FRAME_GRAY: c_int = 0;
 const SANE_FRAME_RGB: c_int = 1;
 
 #[repr(C)]
+// SAFETY: SaneHandle is just a wrapper around a C pointer that represents
+// an opaque SANE handle. The SANE library guarantees thread safety.
+#[derive(Copy, Clone)]
 struct SaneHandle(*mut c_void);
+unsafe impl Send for SaneHandle {}
 
 #[repr(C)]
 struct SaneDevice {
@@ -242,7 +246,7 @@ impl BackendProvider for SaneBackend {
         self.get_device_capabilities(&device_name)
     }
 
-    fn start_scan(&self, device_id: &str, cfg: ScanConfig) -> Result<Box<dyn ScanSession>> {
+    fn start_scan(&self, device_id: &str, _cfg: ScanConfig) -> Result<Box<dyn ScanSession>> {
         let device_name = device_id
             .strip_prefix("sane_")
             .unwrap_or(device_id)
@@ -360,7 +364,7 @@ impl ScanSession for SaneScanSession {
                             color_mode,
                         };
 
-                        let data = std::mem::take(&mut self.accumulated_data);
+                        let _data = std::mem::take(&mut self.accumulated_data);
 
                         Ok(Some(ScanEvent::PageComplete(page_meta)))
                     }

@@ -153,10 +153,10 @@ fn test_ffi_memory_safety() {
                     let caps = papyr_get_capabilities(first_scanner.id);
                     if !caps.is_null() {
                         // Verify capabilities structure is valid
-                        let capabilities = &*caps;
-                        assert!(capabilities.sources_count >= 0);
-                        assert!(capabilities.dpis_count >= 0);
-                        assert!(capabilities.color_modes_count >= 0);
+                        let _capabilities = &*caps;
+                        // assert!(capabilities.sources_count >= 0); // Always true for usize
+                        // assert!(capabilities.dpis_count >= 0); // Always true for usize
+                        // assert!(capabilities.color_modes_count >= 0); // Always true for usize
 
                         papyr_free_capabilities(caps);
                     }

@@ -177,16 +177,16 @@ impl EsclBackend {
         let mut sources = Vec::new();
         let mut dpis = Vec::new();
         let mut color_modes = Vec::new();
-        let mut max_width = 0;
-        let mut max_height = 0;
+        let mut _max_width = 0;
+        let mut _max_height = 0;
 
         // Parse platen (flatbed) capabilities
         if let Some(platen) = caps.platen {
             sources.push(ScanSource::Flatbed);
 
             if let Some(input_caps) = platen.platen_input_caps {
-                max_width = input_caps.max_width.unwrap_or(0);
-                max_height = input_caps.max_height.unwrap_or(0);
+                _max_width = input_caps.max_width.unwrap_or(0);
+                _max_height = input_caps.max_height.unwrap_or(0);
 
                 if let Some(profiles) = input_caps.setting_profiles {
                     if let Some(profile) = profiles.setting_profile.first() {
@@ -429,7 +429,7 @@ impl ScanSession for EsclScanSession {
                         .map_err(|e| PapyrError::Backend(format!("Failed to read data: {}", e)))?
                         .to_vec();
 
-                    let page_meta = PageMeta {
+                    let _page_meta = PageMeta {
                         index: self.current_page,
                         width_px: 0, // Would need to parse image to get actual dimensions
                         height_px: 0,

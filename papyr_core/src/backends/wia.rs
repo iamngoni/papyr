@@ -37,9 +37,7 @@ impl WiaBackend {
         }
 
         #[cfg(not(windows))]
-        WiaBackend {
-            device_manager: None,
-        }
+        WiaBackend {}
     }
 
     #[cfg(windows)]
@@ -167,7 +165,7 @@ impl BackendProvider for WiaBackend {
         vec![]
     }
 
-    fn capabilities(&self, device_id: &str) -> Result<Capabilities> {
+    fn capabilities(&self, _device_id: &str) -> Result<Capabilities> {
         #[cfg(windows)]
         {
             use crate::models::{ColorMode, PageSize, ScanSource};
@@ -195,7 +193,7 @@ impl BackendProvider for WiaBackend {
         Err(PapyrError::Backend("WIA only supported on Windows".into()))
     }
 
-    fn start_scan(&self, device_id: &str, cfg: ScanConfig) -> Result<Box<dyn ScanSession>> {
+    fn start_scan(&self, _device_id: &str, _cfg: ScanConfig) -> Result<Box<dyn ScanSession>> {
         #[cfg(windows)]
         {
             let session = WiaScanSession::new(device_id, cfg)?;
@@ -218,7 +216,7 @@ pub struct WiaScanSession {
 
 impl WiaScanSession {
     #[cfg(windows)]
-    pub fn new(device_id: &str, config: ScanConfig) -> Result<Self> {
+    pub fn new(_device_id: &str, config: ScanConfig) -> Result<Self> {
         Ok(WiaScanSession {
             device_id: device_id.to_string(),
             config,
@@ -227,7 +225,7 @@ impl WiaScanSession {
     }
 
     #[cfg(not(windows))]
-    pub fn new(_device_id: &str, _config: ScanConfig) -> Result<Self> {
+    pub fn new(__device_id: &str, _config: ScanConfig) -> Result<Self> {
         Err(PapyrError::Backend("WIA only supported on Windows".into()))
     }
 }

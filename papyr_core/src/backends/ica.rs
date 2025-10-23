@@ -1,3 +1,6 @@
+#![allow(unexpected_cfgs)]
+#![allow(deprecated)]
+
 //
 //  papyr_core
 //  backends/ica.rs - macOS Image Capture Architecture Backend
@@ -11,7 +14,7 @@ use std::process::Command;
 
 #[cfg(target_os = "macos")]
 use image_capture_core::{
-    device::ICDevice, device_browser::ICDeviceBrowser, scanner_device::ICScannerDevice,
+    device::ICDevice, device_browser::ICDeviceBrowser,
 };
 
 #[cfg(target_os = "macos")]
@@ -54,16 +57,6 @@ impl IcaBackend {
         println!("   🔌 ioreg found: {} devices", ioreg_scanners.len());
         scanners.extend(ioreg_scanners);
 
-        // Try eSCL discovery asynchronously (this won't hang now)
-        match crate::escl::discover_escl_scanners().await {
-            Ok(escl_scanners) => {
-                println!("   🌐 eSCL found: {} devices", escl_scanners.len());
-                scanners.extend(escl_scanners);
-            }
-            Err(e) => {
-                println!("   ❌ eSCL discovery failed: {:?}", e);
-            }
-        }
 
         // Try legacy ImageCapture discovery
         let imagecapture_scanners = self.try_legacy_imagecapture_discovery()?;
@@ -260,6 +253,7 @@ impl IcaBackend {
                     "Brother",
                 ];
 
+                #[allow(unused_assignments)]
                 let mut current_device = String::new();
 
                 for line in output_str.lines() {
@@ -291,26 +285,24 @@ impl IcaBackend {
                     if scanner_keywords
                         .iter()
                         .any(|&keyword| line.to_lowercase().contains(&keyword.to_lowercase()))
+                        && !line.contains("Product ID")
+                        && !line.contains("Vendor ID")
+                        && line.len() > 10
                     {
-                        if !line.contains("Product ID")
-                            && !line.contains("Vendor ID")
-                            && line.len() > 10
-                        {
-                            println!("   🔍 Found scanner-related line: {}", line);
-                            let device_name = if line.ends_with(":") {
-                                line.trim_end_matches(':').to_string()
-                            } else {
-                                line.to_string()
-                            };
+                        println!("   🔍 Found scanner-related line: {}", line);
+                        let device_name = if line.ends_with(":") {
+                            line.trim_end_matches(':').to_string()
+                        } else {
+                            line.to_string()
+                        };
 
-                            // Avoid duplicates
-                            if !scanners.iter().any(|s| s.name == device_name) {
-                                scanners.push(ScannerInfo {
-                                    id: format!("detected_{}", scanners.len()),
-                                    name: device_name,
-                                    backend: Backend::Ica,
-                                });
-                            }
+                        // Avoid duplicates
+                        if !scanners.iter().any(|s| s.name == device_name) {
+                            scanners.push(ScannerInfo {
+                                id: format!("detected_{}", scanners.len()),
+                                name: device_name,
+                                backend: Backend::Ica,
+                            });
                         }
                     }
                 }
@@ -620,8 +612,8 @@ impl IcaScanSession {
     pub fn new(_device_id: &str, _config: ScanConfig) -> Result<Self> {
         Err(PapyrError::Backend("ICA only supported on macOS".into()))
     }
-}
 
+}
 impl ScanSession for IcaScanSession {
     fn next_event(&mut self) -> Result<Option<ScanEvent>> {
         #[cfg(target_os = "macos")]
@@ -657,17 +649,10 @@ impl ScanSession for IcaScanSession {
 }
 
 impl IcaScanSession {
-    #[cfg(target_os = "macos")]
     fn try_actual_scan(&mut self) -> Result<Vec<ScanEvent>> {
-        use crate::models::{ColorMode, PageMeta};
-        use std::fs;
 
         println!("🖨️ Attempting to scan from device: {}", self.device_id);
 
-        // Try eSCL scanning for network devices first
-        if self.device_id.contains("escl_") {
-            return self.try_escl_scan();
-        }
 
         // For HP MFPs, try using the native Image Capture framework via command line
         if self.device_id.contains("mfp_hp") || self.device_id.contains("HP") {
@@ -679,8 +664,10 @@ impl IcaScanSession {
     }
 
     #[cfg(target_os = "macos")]
+    #[cfg(target_os = "macos")]
     fn try_macos_image_capture_scan(&mut self) -> Result<Vec<ScanEvent>> {
-        use crate::models::{ColorMode, PageMeta};
+        use crate::models::PageMeta;
+        #[allow(deprecated)]
         use cocoa::base::{id, nil};
         use cocoa::foundation::NSUInteger;
 
@@ -918,49 +905,4 @@ impl IcaScanSession {
         }
     }
 
-    #[cfg(target_os = "macos")]
-    fn try_escl_scan(&mut self) -> Result<Vec<ScanEvent>> {
-        use crate::models::{ColorMode, PageMeta};
-
-        println!("🌐 Using direct eSCL protocol implementation");
-
-        // Extract IP address from device ID (format: escl_192_168_1_100)
-        let ip_address = if self.device_id.starts_with("escl_") {
-            let ip_part = &self.device_id[5..]; // Remove "escl_" prefix
-            ip_part.replace("_", ".") // Convert escl_192_168_1_100 -> 192.168.1.100
-        } else {
-            return Err(PapyrError::Backend("Invalid eSCL device ID format".into()));
-        };
-
-        println!("🔧 Scanning eSCL device at IP: {}", ip_address);
-
-        // Create a new async runtime for the scan
-        if let Ok(rt) = tokio::runtime::Runtime::new() {
-            match rt.block_on(crate::escl::scan_escl_document(&ip_address, &self.config)) {
-                Ok(scan_data) => {
-                    println!("✅ eSCL scan completed: {} bytes", scan_data.len());
-
-                    let page_meta = PageMeta {
-                        index: 0,
-                        width_px: (8.5 * self.config.dpi as f32) as u32,
-                        height_px: (11.0 * self.config.dpi as f32) as u32,
-                        dpi: self.config.dpi,
-                        color_mode: self.config.color_mode,
-                    };
-
-                    Ok(vec![
-                        ScanEvent::PageStarted(0),
-                        ScanEvent::PageData(scan_data),
-                        ScanEvent::PageComplete(page_meta),
-                    ])
-                }
-                Err(e) => {
-                    println!("❌ eSCL scan failed: {:?}", e);
-                    Err(e)
-                }
-            }
-        } else {
-            Err(PapyrError::Backend("Failed to create async runtime".into()))
-        }
-    }
 }
