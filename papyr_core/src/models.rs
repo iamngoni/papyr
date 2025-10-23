@@ -11,10 +11,11 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Backend {
-    Wia,  // Windows Image Acquisition
-    Sane, // Scanner Access Now Easy (Linux)
-    Ica,  // Image Capture Architecture (macOS)
-    Escl, // eSCL/AirScan (network scanners, cross-platform)
+    Twain, // TWAIN (Windows/macOS, primary)
+    Wia,   // Windows Image Acquisition
+    Sane,  // Scanner Access Now Easy (Linux)
+    Ica,   // Image Capture Architecture (macOS)
+    Escl,  // eSCL/AirScan (network scanners, cross-platform)
     Unknown,
 }
 

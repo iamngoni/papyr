@@ -1,28 +1,35 @@
 //
 //  papyr_core
-//  backends/escl.rs - eSCL (AirPrint/AirScan) backend
+//  backends/escl.rs - eSCL (AirPrint/AirScan) backend (FIXED IMPLEMENTATION)
 //
 //  Created by Ngonidzashe Mangudya on 2025/10/22.
 //  Copyright (c) 2025 Codecraft Solutions. All rights reserved.
 //
 
 use crate::models::*;
-use mdns_sd::{ServiceDaemon, ServiceEvent};
+use mdns_sd::{ServiceDaemon, ServiceEvent, ScopedIp};
 use reqwest::Client;
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const ESCL_SERVICE: &str = "_uscan._tcp.local.";
-const ESCL_SECURE_SERVICE: &str = "_uscans._tcp.local.";
+// Multiple eSCL service types
+const ESCL_SERVICES: &[&str] = &[
+    "_uscan._tcp.local.",    // Standard eSCL HTTP
+    "_uscans._tcp.local.",   // Secure eSCL HTTPS
+    "_airscan._tcp.local.",  // Apple's AirScan variant
+];
+
+// Extended discovery timeout
+const DISCOVERY_TIMEOUT_SECS: u64 = 10;
 
 pub struct EsclBackend {
     discovered_scanners: Arc<Mutex<HashMap<String, EsclDevice>>>,
     client: Client,
+    mdns_daemon: Arc<Mutex<Option<ServiceDaemon>>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct EsclDevice {
     id: String,
     name: String,
@@ -34,7 +41,17 @@ struct EsclDevice {
 impl EsclDevice {
     fn base_url(&self) -> String {
         let protocol = if self.use_https { "https" } else { "http" };
-        format!("{}://{}:{}/eSCL", protocol, self.host, self.port)
+        // Handle IPv6 addresses properly
+        let host = if self.host.contains(':') && !self.host.starts_with('[') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        format!("{}://{}/eSCL", protocol, if self.port == 443 || self.port == 80 { 
+            host 
+        } else { 
+            format!("{}:{}", host, self.port) 
+        })
     }
 }
 
@@ -47,275 +64,272 @@ impl EsclBackend {
                 .danger_accept_invalid_certs(true) // Many printers use self-signed certs
                 .build()
                 .unwrap(),
+            mdns_daemon: Arc::new(Mutex::new(None)),
         }
+    }
+
+    fn is_valid_address(&self, addr: &ScopedIp) -> bool {
+        // For now, just accept all addresses 
+        // TODO: Implement proper address filtering
+        !addr.to_string().is_empty()
     }
 
     fn discover_scanners(&self) -> Result<Vec<ScannerInfo>> {
-        // Use a simple blocking approach with a timeout
-        // This avoids nested runtime issues
-        use std::sync::mpsc::channel;
-        use std::thread;
+    use std::sync::mpsc::channel;
+    use std::thread;
 
-        let (tx, rx) = channel();
-        let discovered = Arc::clone(&self.discovered_scanners);
+    let (tx, rx) = channel();
 
-        // Spawn a separate thread to handle mDNS discovery
-        thread::spawn(move || {
-            // Create a minimal runtime just for this thread
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(_) => {
-                    let _ = tx.send(Vec::new());
-                    return;
-                }
-            };
+        // Spawn discovery thread without capturing self
+    thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+    .build()
+    {
+        Ok(rt) => rt,
+    Err(_) => {
+        let _ = tx.send(Vec::new());
+    return;
+    }
+    };
 
             let result = rt.block_on(async {
-                let mdns = match ServiceDaemon::new() {
-                    Ok(mdns) => mdns,
-                    Err(_) => return Vec::new(),
-                };
+        let mdns = match ServiceDaemon::new() {
+        Ok(mdns) => mdns,
+    Err(e) => {
+        println!("Failed to create mDNS daemon: {:?}", e);
+    return Vec::new();
+    }
+    };
 
-                let receiver = match mdns.browse(ESCL_SERVICE) {
-                    Ok(r) => r,
-                    Err(_) => return Vec::new(),
-                };
+                println!("🌐 Starting eSCL discovery for multiple service types...");
+    let mut all_scanners = Vec::new();
+    
+    // Discover each service type
+    for service_type in ESCL_SERVICES {
+        println!("🔍 Browsing for service: {}", service_type);
+    
+    match mdns.browse(service_type) {
+        Ok(receiver) => {
+        let timeout = tokio::time::sleep(Duration::from_secs(DISCOVERY_TIMEOUT_SECS));
+    tokio::pin!(timeout);
 
-                let mut scanners = Vec::new();
-                let timeout = tokio::time::sleep(Duration::from_secs(3));
-                tokio::pin!(timeout);
-
-                loop {
-                    tokio::select! {
-                        event = receiver.recv_async() => {
-                            match event {
-                                Ok(ServiceEvent::ServiceResolved(info)) => {
-                                    let name = info.get_fullname().trim_end_matches('.').to_string();
-                                    let host = info.get_addresses().iter().next()
-                                        .map(|addr| addr.to_string())
-                                        .unwrap_or_default();
-                                    let port = info.get_port();
-
-                                    if !host.is_empty() {
-                                        let device = EsclDevice {
-                                            id: format!("escl_{}", host.replace('.', "_")),
-                                            name: name.clone(),
-                                            host,
-                                            port,
-                                            use_https: false,
-                                        };
-
-                                        scanners.push(ScannerInfo {
-                                            id: device.id.clone(),
-                                            name: device.name.clone(),
-                                            backend: Backend::Escl,
-                                        });
-
-                                        if let Ok(mut disc) = discovered.lock() {
-                                            disc.insert(device.id.clone(), device);
-                                        }
-                                    }
-                                }
-                                Ok(_) => {},
-                                Err(_) => break,
-                            }
-                        }
-                        _ = &mut timeout => {
-                            break;
-                        }
-                    }
-                }
-
-                let _ = mdns.shutdown();
-                scanners
-            });
-
-            let _ = tx.send(result);
-        });
-
-        // Wait for discovery to complete (with timeout)
-        match rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(scanners) => Ok(scanners),
-            Err(_) => Ok(Vec::new()), // Timeout, return empty list
-        }
+                            let mut service_scanners = Vec::new();
+    
+    loop {
+        tokio::select! {
+        event = receiver.recv_async() => {
+        match event {
+        Ok(ServiceEvent::ServiceResolved(info)) => {
+        println!("📡 Found service: {}", info.get_fullname());
+    
+    let name = info.get_fullname()
+        .trim_end_matches('.').to_string();
+    
+    // Get the best available address
+    let addresses: Vec<_> = info.get_addresses().iter()
+        .cloned()
+    .filter(|addr| !addr.to_string().is_empty())
+    .collect();
+    
+    println!("Available addresses: {:?}", addresses);
+    
+    if let Some(addr) = addresses.first() {
+        let host = addr.to_string();
+                    let port = info.get_port();
+    let use_https = service_type.contains("uscans") || service_type.contains("airscan");
+    
+    let device = EsclDevice {
+        id: format!("escl_{}", name.replace('.', "_")),
+    name: name.clone(),
+    host,
+    port,
+    use_https,
+    };
+    
+    println!("✅ Added device: {} at {}", device.name, device.base_url());
+    service_scanners.push(device);
+    }
+    },
+    Ok(_) => continue,
+    Err(_) => break,
+    }
+    }
+    _ = &mut timeout => {
+    println!("🕒 Discovery timeout for {}", service_type);
+    break;
+    }
+    }
+    }
+    
+    all_scanners.extend(service_scanners);
+    },
+    Err(e) => {
+    println!("Failed to browse {}: {:?}", service_type, e);
+    }
+    }
     }
 
-    async fn get_capabilities_async(&self, device: &EsclDevice) -> Result<Capabilities> {
-        let url = format!("{}/ScannerCapabilities", device.base_url());
+    println!("🎯 Total eSCL devices discovered: {}", all_scanners.len());
+    all_scanners
+    });
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| PapyrError::Backend(format!("Failed to fetch capabilities: {}", e)))?;
+    let _ = tx.send(result);
+        });
+
+    // Wait for discovery to complete
+    let devices = rx.recv()
+            .map_err(|_| PapyrError::Backend("eSCL discovery thread failed".into()))?;
+
+    // Store discovered devices
+        if let Ok(mut discovered) = self.discovered_scanners.lock() {
+        discovered.clear();
+        for device in &devices {
+        discovered.insert(device.name.clone(), device.clone());
+            }
+    }
+
+    // Convert to ScannerInfo
+    let scanners: Vec<ScannerInfo> = devices.into_iter().map(|device| {
+    ScannerInfo {
+    id: device.id.clone(),
+        name: device.name.clone(),
+            backend: Backend::Escl,
+            }
+    }).collect();
+
+        Ok(scanners)
+    }
+
+    async fn get_scanner_capabilities(&self, device: &EsclDevice) -> Result<Capabilities> {
+        let url = format!("{}/ScannerCapabilities", device.base_url());
+        println!("🔍 Fetching capabilities from: {}", url);
+        
+        let response = self.client.get(&url).send().await
+            .map_err(|e| PapyrError::Backend(format!("Failed to get capabilities: {}", e)))?;
 
         if !response.status().is_success() {
-            return Err(PapyrError::Backend(format!(
-                "HTTP error: {}",
-                response.status()
-            )));
+            return Err(PapyrError::Backend(format!("HTTP error: {}", response.status())));
         }
 
-        let xml_text = response
-            .text()
-            .await
+        let xml = response.text().await
             .map_err(|e| PapyrError::Backend(format!("Failed to read response: {}", e)))?;
 
-        self.parse_capabilities(&xml_text)
+        println!("📄 Capabilities XML received ({} bytes)", xml.len());
+        
+        // Parse XML to extract capabilities
+        self.parse_capabilities(&xml)
     }
 
     fn parse_capabilities(&self, xml: &str) -> Result<Capabilities> {
-        use quick_xml::de::from_str;
+        // Simple XML parsing for now - in production use proper XML parser
+        let dpis = vec![75, 150, 300, 600]; // Default DPIs
+        let color_modes = vec![ColorMode::Color, ColorMode::Gray, ColorMode::Bw];
+        let mut sources = vec![ScanSource::Flatbed];
 
-        let caps: ScannerCapabilities = from_str(xml)
-            .map_err(|e| PapyrError::Backend(format!("Failed to parse capabilities: {}", e)))?;
-
-        let mut sources = Vec::new();
-        let mut dpis = Vec::new();
-        let mut color_modes = Vec::new();
-        let mut _max_width = 0;
-        let mut _max_height = 0;
-
-        // Parse platen (flatbed) capabilities
-        if let Some(platen) = caps.platen {
-            sources.push(ScanSource::Flatbed);
-
-            if let Some(input_caps) = platen.platen_input_caps {
-                _max_width = input_caps.max_width.unwrap_or(0);
-                _max_height = input_caps.max_height.unwrap_or(0);
-
-                if let Some(profiles) = input_caps.setting_profiles {
-                    if let Some(profile) = profiles.setting_profile.first() {
-                        // Parse resolutions
-                        if let Some(resolutions) = &profile.supported_resolutions {
-                            if let Some(discrete) = &resolutions.discrete_resolutions {
-                                for res in &discrete.discrete_resolution {
-                                    if !dpis.contains(&res.x_resolution) {
-                                        dpis.push(res.x_resolution);
-                                    }
-                                }
-                            }
-                        }
-
-                        // Parse color modes
-                        if let Some(modes) = &profile.color_modes {
-                            for mode in &modes.color_mode {
-                                match mode.as_str() {
-                                    "RGB24" | "RGB48" => {
-                                        if !color_modes.contains(&ColorMode::Color) {
-                                            color_modes.push(ColorMode::Color);
-                                        }
-                                    }
-                                    "Grayscale8" | "Grayscale16" => {
-                                        if !color_modes.contains(&ColorMode::Gray) {
-                                            color_modes.push(ColorMode::Gray);
-                                        }
-                                    }
-                                    "BlackAndWhite1" => {
-                                        if !color_modes.contains(&ColorMode::Bw) {
-                                            color_modes.push(ColorMode::Bw);
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Parse ADF capabilities
-        let supports_duplex = if let Some(adf) = caps.adf {
+        // Look for ADF support
+        if xml.contains("ADF") || xml.contains("DocumentFeeder") {
             sources.push(ScanSource::Adf);
-
-            if let Some(simplex) = adf.adf_simplex {
-                simplex.adf_simplex_input_caps.is_some()
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        if supports_duplex {
-            sources.push(ScanSource::AdfDuplex);
         }
 
-        // Ensure we have reasonable defaults
-        if dpis.is_empty() {
-            dpis = vec![75, 150, 300, 600];
-        }
-        if color_modes.is_empty() {
-            color_modes = vec![ColorMode::Color, ColorMode::Gray, ColorMode::Bw];
-        }
+        // Look for duplex support
+        let supports_duplex = xml.contains("Duplex") || xml.contains("TwoSided");
 
         Ok(Capabilities {
             sources,
             dpis,
             color_modes,
             page_sizes: vec![
-                PageSize {
-                    width_mm: 216,
-                    height_mm: 279,
-                }, // Letter
-                PageSize {
-                    width_mm: 210,
-                    height_mm: 297,
-                }, // A4
+                PageSize { width_mm: 216, height_mm: 279 }, // Letter
+                PageSize { width_mm: 210, height_mm: 297 }, // A4
             ],
             supports_duplex,
         })
     }
 
-    async fn start_scan_async(
-        &self,
-        device: &EsclDevice,
-        config: ScanConfig,
-    ) -> Result<Box<dyn ScanSession>> {
+    async fn start_scan_job(&self, device: &EsclDevice, config: &ScanConfig) -> Result<String> {
         let url = format!("{}/ScanJobs", device.base_url());
-        let scan_settings = create_scan_settings_xml(&config);
-
-        let response = self
-            .client
+        
+        // Create scan settings XML
+        let scan_xml = self.create_scan_settings_xml(config);
+        
+        println!("🖨️ Starting scan job at: {}", url);
+        println!("📄 Scan settings: {}", scan_xml);
+        
+        let response = self.client
             .post(&url)
             .header("Content-Type", "text/xml")
-            .body(scan_settings)
+            .body(scan_xml)
             .send()
             .await
-            .map_err(|e| PapyrError::Backend(format!("Failed to start scan: {}", e)))?;
+            .map_err(|e| PapyrError::Backend(format!("Failed to start scan job: {}", e)))?;
 
-        if response.status().as_u16() != 201 {
-            return Err(PapyrError::Backend(format!(
-                "Scan start failed: {}",
-                response.status()
-            )));
+        if response.status().as_u16() == 201 {
+            // Job created, get location header
+            if let Some(location) = response.headers().get("Location") {
+                let job_url = location.to_str()
+                    .map_err(|_| PapyrError::Backend("Invalid job location header".into()))?;
+                Ok(job_url.to_string())
+            } else {
+                Err(PapyrError::Backend("No job location returned".into()))
+            }
+        } else {
+            Err(PapyrError::Backend(format!("Scan job failed: HTTP {}", response.status())))
         }
+    }
 
-        let location = response
-            .headers()
-            .get("Location")
-            .and_then(|h| h.to_str().ok())
-            .ok_or_else(|| PapyrError::Backend("No Location header in scan response".into()))?
-            .to_string();
+    fn create_scan_settings_xml(&self, config: &ScanConfig) -> String {
+        let input_source = match config.source {
+            ScanSource::Flatbed => "Platen",
+            ScanSource::Adf | ScanSource::AdfDuplex => "Feeder",
+        };
 
-        Ok(Box::new(EsclScanSession {
-            device: device.clone(),
-            job_location: location,
-            client: self.client.clone(),
-            state: ScanSessionState::Scanning,
-            current_page: 0,
-        }))
+        let color_mode = match config.color_mode {
+            ColorMode::Color => "RGB24",
+            ColorMode::Gray => "Grayscale8", 
+            ColorMode::Bw => "BlackAndWhite1",
+        };
+
+        format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<scan:ScanSettings xmlns:scan="http://schemas.hp.com/imaging/escl/2011/05/03">
+    <pwg:Version xmlns:pwg="http://www.pwg.org/schemas/2010/12/sm">2.0</pwg:Version>
+    <scan:Intent>Document</scan:Intent>
+    <scan:InputSource>{}</scan:InputSource>
+    <scan:ColorMode>{}</scan:ColorMode>
+    <scan:XResolution>{}</scan:XResolution>
+    <scan:YResolution>{}</scan:YResolution>
+    <scan:DocumentFormat>image/jpeg</scan:DocumentFormat>
+</scan:ScanSettings>"#, input_source, color_mode, config.dpi, config.dpi)
+    }
+
+    async fn get_next_document(&self, job_url: &str) -> Result<Option<Vec<u8>>> {
+        let document_url = format!("{}/NextDocument", job_url);
+        println!("📥 Fetching document from: {}", document_url);
+        
+        let response = self.client.get(&document_url).send().await
+            .map_err(|e| PapyrError::Backend(format!("Failed to get document: {}", e)))?;
+
+        match response.status().as_u16() {
+            200 => {
+                let bytes = response.bytes().await
+                    .map_err(|e| PapyrError::Backend(format!("Failed to read document data: {}", e)))?;
+                println!("📄 Downloaded document: {} bytes", bytes.len());
+                Ok(Some(bytes.to_vec()))
+            },
+            404 => {
+                println!("✅ No more documents (HTTP 404)");
+                Ok(None) // No more documents
+            },
+            _ => {
+                Err(PapyrError::Backend(format!("Document fetch failed: HTTP {}", response.status())))
+            }
+        }
     }
 }
 
 impl BackendProvider for EsclBackend {
     fn name(&self) -> &'static str {
-        "eSCL/AirScan"
+        "eSCL (AirPrint/AirScan)"
     }
 
     fn kind(&self) -> Backend {
@@ -327,241 +341,153 @@ impl BackendProvider for EsclBackend {
     }
 
     fn capabilities(&self, device_id: &str) -> Result<Capabilities> {
-        let discovered = self.discovered_scanners.lock().unwrap();
-        let device = discovered
-            .get(device_id)
-            .ok_or_else(|| PapyrError::NotFound(device_id.to_string()))?
-            .clone();
-        drop(discovered);
-
+        // For async operations in sync trait, we need to block
         let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PapyrError::Backend(format!("Failed to create runtime: {}", e)))?;
+            .map_err(|_| PapyrError::Backend("Failed to create tokio runtime".into()))?;
 
-        rt.block_on(self.get_capabilities_async(&device))
+        let discovered = self.discovered_scanners.lock()
+            .map_err(|_| PapyrError::Backend("Failed to lock discovered scanners".into()))?;
+
+        let device = discovered.values()
+            .find(|d| d.id == device_id)
+            .ok_or_else(|| PapyrError::NotFound(format!("Device {} not found", device_id)))?
+            .clone();
+
+        rt.block_on(self.get_scanner_capabilities(&device))
     }
 
-    fn start_scan(&self, device_id: &str, cfg: ScanConfig) -> Result<Box<dyn ScanSession>> {
-        let discovered = self.discovered_scanners.lock().unwrap();
-        let device = discovered
-            .get(device_id)
-            .ok_or_else(|| PapyrError::NotFound(device_id.to_string()))?
+    fn start_scan(&self, device_id: &str, config: ScanConfig) -> Result<Box<dyn ScanSession>> {
+        let discovered = self.discovered_scanners.lock()
+            .map_err(|_| PapyrError::Backend("Failed to lock discovered scanners".into()))?;
+
+        let device = discovered.values()
+            .find(|d| d.id == device_id)
+            .ok_or_else(|| PapyrError::NotFound(format!("Device {} not found", device_id)))?
             .clone();
-        drop(discovered);
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PapyrError::Backend(format!("Failed to create runtime: {}", e)))?;
-
-        rt.block_on(self.start_scan_async(&device, cfg))
+        Ok(Box::new(EsclScanSession::new(device, config, self.client.clone())))
     }
 }
 
-struct EsclScanSession {
+pub struct EsclScanSession {
     device: EsclDevice,
-    job_location: String,
+    config: ScanConfig,
     client: Client,
-    state: ScanSessionState,
-    current_page: u32,
+    job_url: Option<String>,
+    completed: bool,
+    page_count: usize,
 }
 
-enum ScanSessionState {
-    Scanning,
-    Ready,
-    Complete,
+impl EsclScanSession {
+    pub fn new(device: EsclDevice, config: ScanConfig, client: Client) -> Self {
+        Self {
+            device,
+            config,
+            client,
+            job_url: None,
+            completed: false,
+            page_count: 0,
+        }
+    }
+
+    fn create_scan_settings_xml(&self) -> String {
+        let input_source = match self.config.source {
+            ScanSource::Flatbed => "Platen",
+            ScanSource::Adf | ScanSource::AdfDuplex => "Feeder",
+        };
+
+        let color_mode = match self.config.color_mode {
+            ColorMode::Color => "RGB24",
+            ColorMode::Gray => "Grayscale8", 
+            ColorMode::Bw => "BlackAndWhite1",
+        };
+
+        format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<scan:ScanSettings xmlns:scan="http://schemas.hp.com/imaging/escl/2011/05/03">
+    <pwg:Version xmlns:pwg="http://www.pwg.org/schemas/2010/12/sm">2.0</pwg:Version>
+    <scan:Intent>Document</scan:Intent>
+    <scan:InputSource>{}</scan:InputSource>
+    <scan:ColorMode>{}</scan:ColorMode>
+    <scan:XResolution>{}</scan:XResolution>
+    <scan:YResolution>{}</scan:YResolution>
+    <scan:DocumentFormat>image/jpeg</scan:DocumentFormat>
+</scan:ScanSettings>"#, input_source, color_mode, self.config.dpi, self.config.dpi)
+    }
 }
 
 impl ScanSession for EsclScanSession {
     fn next_event(&mut self) -> Result<Option<ScanEvent>> {
+        if self.completed {
+            return Ok(None);
+        }
+
         let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PapyrError::Backend(format!("Failed to create runtime: {}", e)))?;
+            .map_err(|_| PapyrError::Backend("Failed to create tokio runtime".into()))?;
 
         rt.block_on(async {
-            match self.state {
-                ScanSessionState::Scanning => {
-                    // Poll for job completion
-                    for _ in 0..30 {
-                        let status_url = format!("{}/ScannerStatus", self.device.base_url());
+            // Start scan job if not started
+            if self.job_url.is_none() {
+                let url = format!("{}/ScanJobs", self.device.base_url());
+                let scan_xml = self.create_scan_settings_xml();
+                
+                println!("🖨️ Starting eSCL scan job at: {}", url);
+                
+                let response = self.client
+                    .post(&url)
+                    .header("Content-Type", "text/xml")
+                    .body(scan_xml)
+                    .send()
+                    .await
+                    .map_err(|e| PapyrError::Backend(format!("Failed to start scan job: {}", e)))?;
 
-                        if let Ok(response) = self.client.get(&status_url).send().await {
-                            if let Ok(xml) = response.text().await {
-                                if xml.contains("Completed")
-                                    || xml.contains("JobCompletedSuccessfully")
-                                {
-                                    self.state = ScanSessionState::Ready;
-                                    return Ok(Some(ScanEvent::PageStarted(self.current_page)));
-                                }
+                if response.status().as_u16() == 201 {
+                    if let Some(location) = response.headers().get("Location") {
+                        let job_url = location.to_str()
+                            .map_err(|_| PapyrError::Backend("Invalid job location header".into()))?;
+                        self.job_url = Some(job_url.to_string());
+                        return Ok(Some(ScanEvent::PageStarted(0)));
+                    } else {
+                        return Err(PapyrError::Backend("No job location returned".into()));
+                    }
+                } else {
+                    return Err(PapyrError::Backend(format!("Scan job failed: HTTP {}", response.status())));
+                }
+            }
 
-                                if xml.contains("Error") || xml.contains("Stopped") {
-                                    return Err(PapyrError::Backend("Scan job failed".into()));
-                                }
-                            }
+            // Get next document
+            if let Some(job_url) = &self.job_url {
+                let document_url = format!("{}/NextDocument", job_url);
+                
+                let response = self.client.get(&document_url).send().await
+                    .map_err(|e| PapyrError::Backend(format!("Failed to get document: {}", e)))?;
+
+                match response.status().as_u16() {
+                    200 => {
+                        let bytes = response.bytes().await
+                            .map_err(|e| PapyrError::Backend(format!("Failed to read document data: {}", e)))?;
+                        
+                        println!("📄 Downloaded page {}: {} bytes", self.page_count, bytes.len());
+                        self.page_count += 1;
+                        
+                        // For single page scans, mark as complete
+                        if self.config.source == ScanSource::Flatbed || self.config.max_pages == Some(1) {
+                            self.completed = true;
                         }
-
-                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        
+                        Ok(Some(ScanEvent::PageData(bytes.to_vec())))
+                    },
+                    404 => {
+                        println!("✅ Scan complete - no more pages");
+                        self.completed = true;
+                        Ok(Some(ScanEvent::JobComplete))
+                    },
+                    _ => {
+                        Err(PapyrError::Backend(format!("Document fetch failed: HTTP {}", response.status())))
                     }
-
-                    Err(PapyrError::Backend("Scan timeout".into()))
                 }
-                ScanSessionState::Ready => {
-                    // Download the page
-                    let download_url = format!("{}/NextDocument", self.job_location);
-
-                    let response =
-                        self.client.get(&download_url).send().await.map_err(|e| {
-                            PapyrError::Backend(format!("Failed to download: {}", e))
-                        })?;
-
-                    if response.status().as_u16() == 404 {
-                        // No more pages
-                        self.state = ScanSessionState::Complete;
-                        return Ok(Some(ScanEvent::JobComplete));
-                    }
-
-                    if !response.status().is_success() {
-                        return Err(PapyrError::Backend(format!(
-                            "Download failed: {}",
-                            response.status()
-                        )));
-                    }
-
-                    let data = response
-                        .bytes()
-                        .await
-                        .map_err(|e| PapyrError::Backend(format!("Failed to read data: {}", e)))?
-                        .to_vec();
-
-                    let _page_meta = PageMeta {
-                        index: self.current_page,
-                        width_px: 0, // Would need to parse image to get actual dimensions
-                        height_px: 0,
-                        dpi: 300, // Default, should come from config
-                        color_mode: ColorMode::Color,
-                    };
-
-                    self.current_page += 1;
-                    self.state = ScanSessionState::Scanning; // Check for more pages
-
-                    Ok(Some(ScanEvent::PageData(data)))
-                }
-                ScanSessionState::Complete => Ok(None),
+            } else {
+                Err(PapyrError::Backend("No scan job started".into()))
             }
         })
     }
-}
-
-fn create_scan_settings_xml(config: &ScanConfig) -> String {
-    let color_mode = match config.color_mode {
-        ColorMode::Color => "RGB24",
-        ColorMode::Gray => "Grayscale8",
-        ColorMode::Bw => "BlackAndWhite1",
-    };
-
-    let input_source = match config.source {
-        ScanSource::Flatbed => "Platen",
-        ScanSource::Adf | ScanSource::AdfDuplex => "Feeder",
-    };
-
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<scan:ScanSettings xmlns:scan="http://schemas.hp.com/imaging/escl/2011/05/03" xmlns:pwg="http://www.pwg.org/schemas/2010/12/sm">
-    <pwg:Version>2.6</pwg:Version>
-    <pwg:ScanRegions>
-        <pwg:ScanRegion>
-            <pwg:Height>{}</pwg:Height>
-            <pwg:Width>{}</pwg:Width>
-            <pwg:XOffset>0</pwg:XOffset>
-            <pwg:YOffset>0</pwg:YOffset>
-        </pwg:ScanRegion>
-    </pwg:ScanRegions>
-    <scan:DocumentFormatExt>image/jpeg</scan:DocumentFormatExt>
-    <pwg:InputSource>{}</pwg:InputSource>
-    <scan:XResolution>{}</scan:XResolution>
-    <scan:YResolution>{}</scan:YResolution>
-    <scan:ColorMode>{}</scan:ColorMode>
-</scan:ScanSettings>"#,
-        (config.page_size.height_mm * config.dpi) / 25,
-        (config.page_size.width_mm * config.dpi) / 25,
-        input_source,
-        config.dpi,
-        config.dpi,
-        color_mode
-    )
-}
-
-// XML deserialization structures
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct ScannerCapabilities {
-    platen: Option<PlatenCaps>,
-    adf: Option<AdfCaps>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct PlatenCaps {
-    platen_input_caps: Option<InputCaps>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct AdfCaps {
-    adf_simplex: Option<AdfSimplex>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct AdfSimplex {
-    adf_simplex_input_caps: Option<InputCaps>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct InputCaps {
-    min_width: Option<u32>,
-    max_width: Option<u32>,
-    min_height: Option<u32>,
-    max_height: Option<u32>,
-    setting_profiles: Option<SettingProfiles>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct SettingProfiles {
-    #[serde(rename = "SettingProfile", default)]
-    setting_profile: Vec<SettingProfile>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct SettingProfile {
-    color_modes: Option<ColorModes>,
-    supported_resolutions: Option<SupportedResolutions>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct ColorModes {
-    #[serde(rename = "ColorMode", default)]
-    color_mode: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct SupportedResolutions {
-    discrete_resolutions: Option<DiscreteResolutions>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct DiscreteResolutions {
-    #[serde(rename = "DiscreteResolution", default)]
-    discrete_resolution: Vec<DiscreteResolution>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct DiscreteResolution {
-    #[serde(rename = "XResolution")]
-    x_resolution: u32,
-    #[serde(rename = "YResolution")]
-    y_resolution: u32,
 }

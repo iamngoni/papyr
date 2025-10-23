@@ -316,10 +316,11 @@ pub extern "C" fn papyr_cleanup() {
 // Helper conversion functions
 fn backend_to_int(backend: Backend) -> c_int {
     match backend {
-        Backend::Wia => 0,
-        Backend::Sane => 1,
-        Backend::Ica => 2,
-        Backend::Escl => 3,
+        Backend::Twain => 0,
+        Backend::Wia => 1,
+        Backend::Sane => 2,
+        Backend::Ica => 3,
+        Backend::Escl => 4,
         Backend::Unknown => 99,
     }
 }

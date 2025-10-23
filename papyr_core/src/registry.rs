@@ -11,6 +11,9 @@ use crate::models::{
     BackendProvider, Capabilities, PapyrError, Result, ScanConfig, ScanSession, ScannerInfo,
 };
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use crate::backends::twain::TwainBackend;
+
 #[cfg(feature = "wia")]
 use crate::backends::wia::WiaBackend;
 
@@ -33,7 +36,11 @@ impl BackendRegistry {
         // eSCL is always available (cross-platform network scanning)
         registry.register(Box::new(EsclBackend::new()));
 
-        // Platform-specific backends
+        // TWAIN is primary backend for Windows and macOS
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        registry.register(Box::new(TwainBackend::new()));
+
+        // Platform-specific backends as fallbacks
         #[cfg(feature = "wia")]
         registry.register(Box::new(WiaBackend::new()));
 

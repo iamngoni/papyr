@@ -9,6 +9,10 @@
 // eSCL is always available (cross-platform network scanning)
 pub mod escl;
 
+// TWAIN is available on Windows and macOS
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub mod twain;
+
 #[cfg(feature = "wia")]
 pub mod wia;
 
