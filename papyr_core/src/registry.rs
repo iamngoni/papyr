@@ -98,14 +98,17 @@ impl BackendRegistry {
     }
 
     pub fn start_scan(&self, device_id: &str, config: ScanConfig) -> Result<Box<dyn ScanSession>> {
+        println!("🚀 Starting scan for device: {}", device_id);
+        
+        // First, find which backend owns this device
         for provider in &self.providers {
-            match provider.start_scan(device_id, config.clone()) {
-                Ok(session) => return Ok(session),
-                Err(PapyrError::NotFound(_)) => continue,
-                Err(e) => return Err(e),
+            let devices = provider.enumerate();
+            if devices.iter().any(|d| d.id == device_id) {
+                println!("📍 Found device in backend: {}", provider.name());
+                return provider.start_scan(device_id, config);
             }
         }
 
-        Err(PapyrError::NotFound(device_id.to_string()))
+        Err(PapyrError::NotFound(format!("Device {} not found in any backend", device_id)))
     }
 }
