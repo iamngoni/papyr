@@ -17,7 +17,7 @@ pub mod twain;
 #[cfg(target_os = "windows")]
 pub mod wia;
 
-#[cfg(feature = "ica")]
+#[cfg(target_os = "macos")]
 pub mod ica;
 
 #[cfg(feature = "sane")]

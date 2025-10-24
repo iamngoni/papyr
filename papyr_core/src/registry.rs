@@ -18,7 +18,7 @@ use crate::backends::twain::TwainBackend;
 #[cfg(target_os = "windows")]
 use crate::backends::wia::WiaBackend;
 
-#[cfg(feature = "ica")]
+#[cfg(target_os = "macos")]
 use crate::backends::ica::IcaBackend;
 
 #[cfg(feature = "sane")]
@@ -34,9 +34,12 @@ impl BackendRegistry {
             providers: Vec::new(),
         };
 
-        // eSCL is always available (cross-platform network scanning)
-        println!("🔧 Registering eSCL backend (network scanners)");
-        registry.register(Box::new(EsclBackend::new()));
+        // Register platform defaults first, then generic ones afterwards
+        #[cfg(target_os = "macos")]
+        {
+            println!("🔧 Registering ICA backend (macOS)");
+            registry.register(Box::new(IcaBackend::new()));
+        }
 
         // WIA is primary backend on Windows
         #[cfg(target_os = "windows")]
@@ -52,18 +55,15 @@ impl BackendRegistry {
             registry.register(Box::new(TwainBackend::new()));
         }
 
-        // Other platform-specific backends
-        #[cfg(feature = "ica")]
-        {
-            println!("🔧 Registering ICA backend (macOS)");
-            registry.register(Box::new(IcaBackend::new()));
-        }
-
         #[cfg(feature = "sane")]
         {
             println!("🔧 Registering SANE backend (Linux)");
             registry.register(Box::new(SaneBackend::new()));
         }
+
+        // eSCL is always available (cross-platform network scanning)
+        println!("🔧 Registering eSCL backend (network scanners)");
+        registry.register(Box::new(EsclBackend::new()));
 
         registry
     }
