@@ -17,6 +17,38 @@ use crate::models::{
 const WIA_DEVICETYPE_SCANNER: i32 = 0x00000001;
 const WIA_DEVICETYPE_DEFAULT: i32 = 0x00000000;
 
+#[cfg(windows)]
+struct ComGuard {
+    initialized: bool,
+}
+
+#[cfg(windows)]
+impl ComGuard {
+    unsafe fn new() -> Self {
+        match CoInitializeEx(None, COINIT_APARTMENTTHREADED) {
+            Ok(()) => Self { initialized: true },
+            Err(err) => {
+                println!(
+                    "⚠️  COM initialization failed or already initialized: {:?}",
+                    err
+                );
+                Self { initialized: false }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ComGuard {
+    fn drop(&mut self) {
+        if self.initialized {
+            unsafe {
+                CoUninitialize();
+            }
+        }
+    }
+}
+
 pub struct WiaBackend {}
 
 impl WiaBackend {
@@ -27,70 +59,68 @@ impl WiaBackend {
     #[cfg(windows)]
     fn enumerate_devices(&self) -> Result<Vec<ScannerInfo>> {
         unsafe {
-            // Initialize COM
-            let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-            if hr.is_err() {
-                println!("⚠️  COM initialization failed or already initialized");
-            }
+            let mut all_devices = Vec::new();
+
+            let _com_guard = ComGuard::new();
 
             println!("🔧 Creating WIA Device Manager...");
 
-            let device_manager: IWiaDevMgr =
-                match CoCreateInstance(&WiaDevMgr, None, CLSCTX_LOCAL_SERVER) {
-                    Ok(dm) => {
-                        println!("✅ WIA Device Manager created");
-                        dm
-                    }
-                    Err(e) => {
-                        println!("❌ Failed to create WIA Device Manager: {:?}", e);
-                        CoUninitialize();
-                        return Ok(vec![]);
-                    }
-                };
+            {
+                let device_manager: IWiaDevMgr =
+                    match CoCreateInstance(&WiaDevMgr, None, CLSCTX_LOCAL_SERVER) {
+                        Ok(dm) => {
+                            println!("✅ WIA Device Manager created");
+                            dm
+                        }
+                        Err(e) => {
+                            println!("❌ Failed to create WIA Device Manager: {:?}", e);
+                            println!("🎯 WIA: Total devices found: {}", all_devices.len());
+                            return Ok(all_devices);
+                        }
+                    };
 
-            let mut all_devices = Vec::new();
+                // Try both scanner types
+                for &device_type in &[WIA_DEVICETYPE_SCANNER, WIA_DEVICETYPE_DEFAULT] {
+                    match device_manager.EnumDeviceInfo(device_type) {
+                        Ok(device_enum) => {
+                            let _ = device_enum.Reset();
 
-            // Try both scanner types
-            for &device_type in &[WIA_DEVICETYPE_SCANNER, WIA_DEVICETYPE_DEFAULT] {
-                match device_manager.EnumDeviceInfo(device_type) {
-                    Ok(device_enum) => {
-                        let _ = device_enum.Reset();
+                            loop {
+                                let mut device_info: Option<IWiaPropertyStorage> = None;
+                                let mut fetched = 0u32;
 
-                        loop {
-                            let mut device_info: Option<IWiaPropertyStorage> = None;
-                            let mut fetched = 0u32;
+                                let hr =
+                                    device_enum.Next(1, &mut device_info as *mut _, &mut fetched);
 
-                            let hr = device_enum.Next(1, &mut device_info as *mut _, &mut fetched);
+                                if hr.is_err() || fetched == 0 {
+                                    break;
+                                }
 
-                            if hr.is_err() || fetched == 0 {
-                                break;
-                            }
+                                if let Some(_info) = device_info {
+                                    // Generate a unique device ID
+                                    let device_id = format!("wia_device_{}", all_devices.len());
+                                    let device_name =
+                                        format!("WIA Scanner {}", all_devices.len() + 1);
 
-                            if let Some(_info) = device_info {
-                                // Generate a unique device ID
-                                let device_id = format!("wia_device_{}", all_devices.len());
-                                let device_name = format!("WIA Scanner {}", all_devices.len() + 1);
+                                    println!("✅ Found WIA device: {}", device_name);
 
-                                println!("✅ Found WIA device: {}", device_name);
-
-                                all_devices.push(ScannerInfo {
-                                    id: device_id,
-                                    name: device_name,
-                                    backend: Backend::Wia,
-                                });
+                                    all_devices.push(ScannerInfo {
+                                        id: device_id,
+                                        name: device_name,
+                                        backend: Backend::Wia,
+                                    });
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        println!(
-                            "⚠️  WIA enumeration failed for type {}: {:?}",
-                            device_type, e
-                        );
+                        Err(e) => {
+                            println!(
+                                "⚠️  WIA enumeration failed for type {}: {:?}",
+                                device_type, e
+                            );
+                        }
                     }
                 }
             }
-
-            CoUninitialize();
 
             println!("🎯 WIA: Total devices found: {}", all_devices.len());
             Ok(all_devices)

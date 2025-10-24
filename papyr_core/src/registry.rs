@@ -38,7 +38,7 @@ impl BackendRegistry {
         println!("🔧 Registering eSCL backend (network scanners)");
         registry.register(Box::new(EsclBackend::new()));
 
-        // WIA is primary backend on Windows 
+        // WIA is primary backend on Windows
         #[cfg(target_os = "windows")]
         {
             println!("🔧 Registering WIA backend (Windows primary)");
@@ -75,15 +75,22 @@ impl BackendRegistry {
     pub fn list_devices(&self) -> Result<Vec<ScannerInfo>> {
         println!("📡 Querying all registered backends for devices...");
         let mut scanners_info = Vec::new();
-        
+
         for (i, provider) in self.providers.iter().enumerate() {
-            println!("🔍 Backend {}: {} - discovering devices...", i + 1, provider.name());
+            println!(
+                "🔍 Backend {}: {} - discovering devices...",
+                i + 1,
+                provider.name()
+            );
             let devices = provider.enumerate();
             println!("   Found {} devices", devices.len());
             scanners_info.extend(devices);
         }
 
-        println!("🎯 Total devices found across all backends: {}", scanners_info.len());
+        println!(
+            "🎯 Total devices found across all backends: {}",
+            scanners_info.len()
+        );
         Ok(scanners_info)
     }
 
@@ -99,7 +106,7 @@ impl BackendRegistry {
 
     pub fn start_scan(&self, device_id: &str, config: ScanConfig) -> Result<Box<dyn ScanSession>> {
         println!("🚀 Starting scan for device: {}", device_id);
-        
+
         // First, find which backend owns this device
         for provider in &self.providers {
             let devices = provider.enumerate();
@@ -109,6 +116,9 @@ impl BackendRegistry {
             }
         }
 
-        Err(PapyrError::NotFound(format!("Device {} not found in any backend", device_id)))
+        Err(PapyrError::NotFound(format!(
+            "Device {} not found in any backend",
+            device_id
+        )))
     }
 }
