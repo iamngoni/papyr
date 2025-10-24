@@ -7,7 +7,7 @@
 //
 
 #[cfg(windows)]
-use windows::{core::*, Win32::Devices::ImageAcquisition::*, Win32::System::Com::*};
+use windows::{Win32::Devices::ImageAcquisition::*, Win32::System::Com::*};
 
 use crate::models::{
     Backend, BackendProvider, Capabilities, ColorMode, PageSize, PapyrError, Result, ScanConfig,
@@ -25,16 +25,20 @@ struct ComGuard {
 #[cfg(windows)]
 impl ComGuard {
     unsafe fn new() -> Self {
-        match CoInitializeEx(None, COINIT_APARTMENTTHREADED) {
-            Ok(()) => Self { initialized: true },
-            Err(err) => {
-                println!(
-                    "⚠️  COM initialization failed or already initialized: {:?}",
-                    err
-                );
-                Self { initialized: false }
-            }
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        if hr.is_ok() {
+            Self { initialized: true }
+        } else {
+            println!(
+                "⚠️  COM initialization failed or already initialized: {:?}",
+                hr
+            );
+            Self { initialized: false }
         }
+    }
+
+    fn initialized(&self) -> bool {
+        self.initialized
     }
 }
 
@@ -61,7 +65,12 @@ impl WiaBackend {
         unsafe {
             let mut all_devices = Vec::new();
 
-            let _com_guard = ComGuard::new();
+            let com_guard = ComGuard::new();
+            if !com_guard.initialized() {
+                println!("⚠️  Unable to initialize COM; skipping WIA enumeration");
+                println!("🎯 WIA: Total devices found: {}", all_devices.len());
+                return Ok(all_devices);
+            }
 
             println!("🔧 Creating WIA Device Manager...");
 
